@@ -1,0 +1,6 @@
+{% extends 'tracker/base.html' %}
+{% block title %}Pengguna{% endblock %}
+{% block content %}
+<header class="page-header"><div><span class="eyebrow">KELOLA AKSES TIM</span><h1>Pengguna<span class="heading-dot">.</span></h1><p class="muted">Atur siapa yang dapat mengakses Boss Laundry.</p></div><a class="button primary" href="{% url 'user-create' %}">＋ Tambah pengguna</a></header>
+<section class="panel"><div class="list-toolbar"><h2>Semua pengguna <span class="count">{{ page.paginator.count }}</span></h2></div><div class="user-list">{% for member in page %}<div class="user-row"><div class="account"><span class="avatar">{{ member.username|first|upper }}</span><div><strong>{{ member.first_name|default:member.username }}</strong><small>@{{ member.username }}</small></div></div><span class="role-badge">{% if member.is_staff %}Admin{% else %}Pengguna{% endif %}</span><span class="user-status {% if not member.is_active %}inactive{% endif %}">{% if member.is_active %}● Aktif{% else %}Dihapus{% endif %}</span><div class="user-actions">{% if member.is_active %}<a href="{% url 'user-password' member.pk %}">Atur kata sandi</a><a class="danger-link" href="{% url 'user-delete' member.pk %}">Hapus</a>{% endif %}</div></div>{% endfor %}</div>{% include 'tracker/pagination.html' %}</section>
+{% endblock %}

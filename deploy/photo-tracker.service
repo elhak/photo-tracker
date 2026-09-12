@@ -1,0 +1,23 @@
+[Unit]
+Description=Boss Laundry web application
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=photo-tracker
+Group=photo-tracker
+WorkingDirectory=/opt/photo-tracker
+EnvironmentFile=/etc/photo-tracker.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/photo-tracker/.venv/bin/gunicorn config.wsgi:application --bind 127.0.0.1:8000 --workers 2 --threads 2 --timeout 120 --error-logfile -
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/photo-tracker
+
+[Install]
+WantedBy=multi-user.target

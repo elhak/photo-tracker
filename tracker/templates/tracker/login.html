@@ -1,0 +1,14 @@
+{% extends 'tracker/base.html' %}
+{% load static %}
+{% block title %}Masuk{% endblock %}
+{% block content %}
+<section class="login-card">
+  <div class="login-brand"><img class="brand-logo" src="{% static 'tracker/boss-laundry-logo.png' %}" alt="Boss Laundry" width="640" height="320"></div>
+  <span class="eyebrow">SELAMAT DATANG</span><h1>Semua foto order.<br>Satu tempat.</h1><p class="muted">Masuk untuk mencatat dan melihat foto order Anda.</p>
+  <form method="post" class="stack">{% csrf_token %}{{ form.non_field_errors }}
+    <div class="field"><label for="id_username">Nama pengguna</label>{{ form.username }}{{ form.username.errors }}</div>
+    <div class="field"><label for="id_password">Kata sandi</label>{{ form.password }}{{ form.password.errors }}</div>
+    <button class="button primary full" type="submit">Masuk <span aria-hidden="true">→</span></button>
+  </form><p class="login-note">Belum punya akun? Hubungi admin Anda.</p>
+</section>
+{% endblock %}

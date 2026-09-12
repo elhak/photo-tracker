@@ -1,0 +1,6 @@
+{
+  "Rules": [
+    {"ID": "expire-photos-after-30-days", "Status": "Enabled", "Filter": {"Prefix": "photos/"}, "Expiration": {"Days": 30}},
+    {"ID": "expire-abandoned-uploads", "Status": "Enabled", "Filter": {"Prefix": "pending/"}, "Expiration": {"Days": 1}, "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1}}
+  ]
+}

@@ -1,0 +1,29 @@
+{% load static %}<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#14c7e7">
+  <title>{% block title %}Tracker{% endblock %} · Boss Laundry</title>
+  <link rel="icon" href="{% static 'tracker/boss-laundry-icon.png' %}" type="image/png">
+  <link rel="stylesheet" href="{% static 'tracker/app.css' %}?v=boss-laundry">
+  {% block head %}{% endblock %}
+</head>
+<body>
+<a class="skip-link" href="#main">Lewati ke konten</a>
+{% if user.is_authenticated %}
+<aside class="sidebar">
+  <a class="brand" href="{% url 'tracker-list' %}"><img class="brand-logo" src="{% static 'tracker/boss-laundry-logo.png' %}" alt="Boss Laundry" width="640" height="320"></a>
+  <span class="nav-label">RUANG KERJA</span>
+  <nav aria-label="Menu utama">
+    <a class="nav-item {% if request.resolver_match.url_name != 'users' and request.resolver_match.url_name != 'user-create' and request.resolver_match.url_name != 'user-password' and request.resolver_match.url_name != 'user-delete' %}active{% endif %}" href="{% url 'tracker-list' %}"><span aria-hidden="true">▦</span> Daftar tracker</a>
+    {% if user.is_staff %}<a class="nav-item {% if 'user' in request.resolver_match.url_name %}active{% endif %}" href="{% url 'users' %}"><span aria-hidden="true">♙</span> Pengguna</a>{% endif %}
+  </nav>
+  <div class="sidebar-bottom"><div class="account"><span class="avatar">{{ user.username|first|upper }}</span><div><strong>{{ user.first_name|default:user.username }}</strong><small>{% if user.is_staff %}Admin{% else %}Pengguna{% endif %}</small></div></div><form method="post" action="{% url 'logout' %}">{% csrf_token %}<button class="logout" type="submit">Keluar <span aria-hidden="true">↗</span></button></form></div>
+</aside>
+{% endif %}
+<main id="main" class="{% if user.is_authenticated %}workspace{% else %}auth-layout{% endif %}">
+{% if messages %}<div class="messages" aria-live="polite">{% for message in messages %}<div class="notice {{ message.tags }}">{{ message }}</div>{% endfor %}</div>{% endif %}
+{% block content %}{% endblock %}
+</main>
+{% block scripts %}{% endblock %}
+</body></html>

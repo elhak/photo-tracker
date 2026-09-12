@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily Boss Laundry backup
+
+[Timer]
+OnCalendar=*-*-* 02:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

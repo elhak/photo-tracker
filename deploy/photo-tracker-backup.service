@@ -1,0 +1,17 @@
+[Unit]
+Description=Back up Boss Laundry SQLite database
+
+[Service]
+Type=oneshot
+User=photo-tracker
+Group=photo-tracker
+WorkingDirectory=/opt/photo-tracker
+EnvironmentFile=/etc/photo-tracker.env
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/opt/photo-tracker/.venv/bin/python manage.py backup_database
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/photo-tracker
