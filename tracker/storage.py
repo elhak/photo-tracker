@@ -83,8 +83,6 @@ def verify_and_copy(intent):
             with Image.open(io.BytesIO(data)) as picture:
                 if picture.format != "JPEG" or picture.width * picture.height > 16_000_000:
                     raise InvalidPhoto("Foto harus berupa JPEG dengan resolusi yang sesuai.")
-                if picture.getexif():
-                    raise InvalidPhoto("Foto harus diproses melalui kamera aplikasi.")
                 picture.verify()
             with Image.open(io.BytesIO(data)) as picture:
                 picture.load()
