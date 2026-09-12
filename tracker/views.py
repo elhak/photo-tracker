@@ -20,7 +20,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
 from .forms import CreateUserForm, OrderForm
-from .models import LoginAttempt, Photo, Tracker, UploadIntent, User
+from .models import LoginAttempt, Photo, Tracker, UploadIntent, User, current_order_month
 from . import services, storage
 
 logger = logging.getLogger(__name__)
@@ -155,10 +155,12 @@ def upload_intent(request):
     request_id = uuid.UUID(data["request_id"])
     owner = request.user
     order_id = form.cleaned_data["order_id"]
+    order_month = current_order_month()
     with transaction.atomic():
         if data.get("tracker_id"):
             tracker = get_object_or_404(trackers_for(request.user), pk=data["tracker_id"])
             owner, order_id = tracker.owner, tracker.order_id
+            order_month = tracker.order_month
         intent = UploadIntent.objects.filter(actor=request.user, request_id=request_id).first()
         if intent:
             if intent.checksum != checksum:
@@ -167,7 +169,7 @@ def upload_intent(request):
         else:
             if UploadIntent.objects.filter(actor=request.user, completed_at__isnull=True, created_at__gt=timezone.now() - timedelta(hours=24)).count() >= 100:
                 return JsonResponse({"error": "Terlalu banyak unggahan tertunda. Selesaikan foto sebelumnya atau coba besok."}, status=429)
-            intent = UploadIntent.objects.create(actor=request.user, owner=owner, order_id=order_id, checksum=checksum, request_id=request_id)
+            intent = UploadIntent.objects.create(actor=request.user, owner=owner, order_id=order_id, order_month=order_month, checksum=checksum, request_id=request_id)
     if intent.completed_at:
         return JsonResponse(completed_payload(intent))
     return JsonResponse({"id": str(intent.id), "upload": storage.sign_upload(intent, byte_size=data.get("byte_size"))})
@@ -202,7 +204,7 @@ def tracker_edit(request, pk):
     collision = None
     if request.method == "POST" and form.is_valid():
         order_id = form.cleaned_data["order_id"]
-        collision = Tracker.objects.filter(owner=tracker.owner, order_id=order_id).exclude(pk=tracker.pk).first()
+        collision = Tracker.objects.filter(owner=tracker.owner, order_id=order_id, order_month=tracker.order_month).exclude(pk=tracker.pk).first()
         if not collision or request.POST.get("confirm") == "yes":
             try:
                 target = services.rename_tracker(pk, order_id, confirmed=request.POST.get("confirm") == "yes")

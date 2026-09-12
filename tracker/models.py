@@ -1,7 +1,12 @@
 import uuid
+from zoneinfo import ZoneInfo
 from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.utils import timezone
+
+
+def current_order_month():
+    return timezone.localtime(timezone.now(), ZoneInfo("Asia/Jakarta")).date().replace(day=1)
 
 
 class User(AbstractUser):
@@ -13,11 +18,12 @@ class User(AbstractUser):
 class Tracker(models.Model):
     owner = models.ForeignKey(User, on_delete=models.PROTECT, related_name="trackers")
     order_id = models.CharField(max_length=100)
+    order_month = models.DateField(default=current_order_month)
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(default=timezone.now, db_index=True)
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["owner", "order_id"], name="unique_owner_order")]
+        constraints = [models.UniqueConstraint(fields=["owner", "order_id", "order_month"], name="unique_owner_order_month")]
         ordering = ["-updated_at", "-pk"]
 
 
@@ -38,6 +44,7 @@ class UploadIntent(models.Model):
     actor = models.ForeignKey(User, on_delete=models.PROTECT, related_name="uploads")
     owner = models.ForeignKey(User, on_delete=models.PROTECT, related_name="owned_uploads")
     order_id = models.CharField(max_length=100)
+    order_month = models.DateField(default=current_order_month)
     checksum = models.CharField(max_length=44)
     created_at = models.DateTimeField(default=timezone.now, db_index=True)
     completed_at = models.DateTimeField(null=True, blank=True)

@@ -32,7 +32,7 @@ def complete_upload(intent_id, actor):
             check_intent_access(intent, actor)
             if intent.completed_at:
                 return intent
-            tracker, _ = Tracker.objects.get_or_create(owner_id=intent.owner_id, order_id=intent.order_id)
+            tracker, _ = Tracker.objects.get_or_create(owner_id=intent.owner_id, order_id=intent.order_id, order_month=intent.order_month)
             photo = Photo.objects.create(
                 id=intent.id, tracker=tracker, added_by=actor, object_key=intent.final_key,
                 byte_size=size, uploaded_at=uploaded_at, expires_at=uploaded_at + timedelta(days=30),
@@ -54,10 +54,10 @@ def complete_upload(intent_id, actor):
 @transaction.atomic
 def rename_tracker(tracker_id, order_id, confirmed=False):
     tracker = Tracker.objects.get(pk=tracker_id)
-    target = Tracker.objects.filter(owner=tracker.owner, order_id=order_id).exclude(pk=tracker.pk).first()
+    target = Tracker.objects.filter(owner=tracker.owner, order_id=order_id, order_month=tracker.order_month).exclude(pk=tracker.pk).first()
     if target and not confirmed:
         raise ActionError("ID order sudah ada. Konfirmasi untuk menggabungkan foto.")
-    UploadIntent.objects.filter(owner=tracker.owner, order_id=tracker.order_id, completed_at__isnull=True).update(order_id=order_id)
+    UploadIntent.objects.filter(owner=tracker.owner, order_id=tracker.order_id, order_month=tracker.order_month, completed_at__isnull=True).update(order_id=order_id)
     if target:
         Photo.objects.filter(tracker=tracker).update(tracker=target)
         target.updated_at = timezone.now()

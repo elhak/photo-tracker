@@ -6,7 +6,7 @@ import tempfile
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import date, datetime, timedelta, timezone as datetime_timezone
 from unittest.mock import patch
 from botocore.exceptions import ClientError
 from django.conf import settings
@@ -19,7 +19,7 @@ from django.utils import timezone
 from moto import mock_aws
 from PIL import Image
 from . import services, storage
-from .models import DeletionJob, LoginAttempt, Photo, Tracker, UploadIntent, User
+from .models import DeletionJob, LoginAttempt, Photo, Tracker, UploadIntent, User, current_order_month
 
 
 def jpeg():
@@ -69,6 +69,49 @@ class TrackerTests(TestCase):
     def published(self, order="001-Ab", actor=None, owner=None):
         intent = self.staged(order, actor, owner)
         return services.complete_upload(intent.pk, actor or self.alice).photo
+
+    def test_order_month_uses_jakarta_calendar_and_year(self):
+        for instant, expected in [
+            (datetime(2026, 8, 31, 16, 59, tzinfo=datetime_timezone.utc), date(2026, 8, 1)),
+            (datetime(2026, 8, 31, 17, 0, tzinfo=datetime_timezone.utc), date(2026, 9, 1)),
+            (datetime(2026, 12, 31, 17, 0, tzinfo=datetime_timezone.utc), date(2027, 1, 1)),
+        ]:
+            with patch("tracker.models.timezone.now", return_value=instant):
+                self.assertEqual(current_order_month(), expected)
+
+    def test_same_order_separates_months_and_completion_keeps_intent_month(self):
+        august = self.staged("141")
+        august.order_month = date(2026, 8, 1)
+        august.save(update_fields=["order_month"])
+        september = self.staged("141")
+        september.order_month = date(2026, 9, 1)
+        september.save(update_fields=["order_month"])
+        first = services.complete_upload(august.pk, self.alice).photo
+        second = services.complete_upload(september.pk, self.alice).photo
+        self.assertNotEqual(first.tracker_id, second.tracker_id)
+        self.assertEqual(first.tracker.order_month, date(2026, 8, 1))
+        self.assertEqual(services.complete_upload(august.pk, self.alice).photo_id, first.pk)
+        self.assertEqual(Photo.objects.count(), 2)
+        # Adding explicitly to the August tracker in a later month retains August.
+        response = self.request_upload("141", tracker_id=first.tracker_id)
+        self.assertEqual(response.status_code, 200)
+        intent = UploadIntent.objects.get(pk=response.json()["id"])
+        self.assertEqual(intent.order_month, date(2026, 8, 1))
+
+    def test_rename_does_not_merge_or_rewrite_pending_in_another_month(self):
+        august = Tracker.objects.create(owner=self.alice, order_id="old", order_month=date(2026, 8, 1))
+        september = Tracker.objects.create(owner=self.alice, order_id="141", order_month=date(2026, 9, 1))
+        pending = self.staged("old")
+        pending.order_month = date(2026, 9, 1)
+        pending.save(update_fields=["order_month"])
+        self.client.force_login(self.admin)
+        response = self.client.post(reverse("tracker-edit", args=[august.pk]), {"order_id": "141"})
+        self.assertEqual(response.status_code, 302)
+        august.refresh_from_db()
+        pending.refresh_from_db()
+        self.assertEqual(august.order_id, "141")
+        self.assertTrue(Tracker.objects.filter(pk=september.pk).exists())
+        self.assertEqual(pending.order_id, "old")
 
     def test_no_tracker_before_photo_and_policy_is_restricted(self):
         response = self.request_upload()

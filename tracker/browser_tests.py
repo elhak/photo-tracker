@@ -98,7 +98,7 @@ class CameraBrowserTests(StaticLiveServerTestCase):
         self.page.screenshot(path=str(self.output / "desktop-empty.png"), full_page=True)
         self.page.get_by_role("link", name="Tambah tracker").first.click()
         expect(self.page.locator("#save-photos")).to_be_disabled()
-        self.page.locator("#order-id").fill("LDR-00124")
+        self.page.locator("#order-id").fill("00124")
         self.page.get_by_role("button", name="Buka kamera").click()
         expect(self.page.locator("#camera")).to_be_visible()
         expect(self.page.locator("#camera")).to_have_js_property("readyState", 4)
