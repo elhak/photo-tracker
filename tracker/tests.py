@@ -55,6 +55,7 @@ class TrackerTests(TestCase):
         return self.client.post(reverse("upload-intent"), json.dumps({
             "order_id": order, "request_id": str(request_id or uuid.uuid4()),
             "checksum": digest(data if data is not None else jpeg()), "tracker_id": tracker_id,
+            "byte_size": len(data if data is not None else jpeg()),
         }), content_type="application/json")
 
     def staged(self, order="001-Ab", actor=None, owner=None, content=None):
@@ -96,6 +97,52 @@ class TrackerTests(TestCase):
         self.assertEqual(first.json()["id"], second.json()["id"])
         self.assertEqual(UploadIntent.objects.count(), 1)
         self.assertEqual(self.request_upload(request_id=request_id, data=b"changed").status_code, 400)
+
+    def test_backblaze_uses_signed_put_with_exact_content_length(self):
+        from urllib.parse import parse_qs, urlparse
+        with patch("tracker.storage.is_backblaze", return_value=True), patch("tracker.storage.client", return_value=self.s3):
+            response = self.request_upload()
+        self.assertEqual(response.status_code, 200)
+        upload = response.json()["upload"]
+        self.assertEqual(upload["method"], "PUT")
+        self.assertNotIn("fields", upload)
+        query = parse_qs(urlparse(upload["url"]).query)
+        self.assertIn("content-length", query["X-Amz-SignedHeaders"][0].split(";"))
+        self.assertEqual(upload["headers"]["Content-Type"], "image/jpeg")
+
+    def test_backblaze_rejects_missing_or_oversized_upload_length(self):
+        intent = self.staged()
+        with patch("tracker.storage.is_backblaze", return_value=True):
+            for size in [None, 0, 500001, True]:
+                with self.assertRaises(storage.InvalidPhoto):
+                    storage.sign_upload(intent, byte_size=size)
+
+    def test_backblaze_copies_verified_version_and_deletes_all_exact_key_versions(self):
+        self.s3.put_bucket_versioning(Bucket=settings.S3_BUCKET, VersioningConfiguration={"Status": "Enabled"})
+        intent = self.staged()
+        self.s3.put_object(Bucket=settings.S3_BUCKET, Key=intent.staging_key, Body=jpeg())
+        neighbor = intent.staging_key + "-other"
+        self.s3.put_object(Bucket=settings.S3_BUCKET, Key=neighbor, Body=b"keep")
+        with patch("tracker.storage.is_backblaze", return_value=True), patch("tracker.storage.client", return_value=self.s3):
+            with patch.object(self.s3, "copy_object", wraps=self.s3.copy_object) as copy:
+                services.complete_upload(intent.pk, self.alice)
+                self.assertIn("VersionId", copy.call_args.kwargs["CopySource"])
+            self.s3.delete_object(Bucket=settings.S3_BUCKET, Key=intent.staging_key)
+            storage.delete_object(intent.staging_key)
+            storage.delete_object(intent.staging_key)  # Retry is harmless.
+        versions = self.s3.list_object_versions(Bucket=settings.S3_BUCKET, Prefix=intent.staging_key)
+        self.assertFalse(any(v["Key"] == intent.staging_key for v in versions.get("Versions", []) + versions.get("DeleteMarkers", [])))
+        self.assertEqual(self.s3.get_object(Bucket=settings.S3_BUCKET, Key=neighbor)["Body"].read(), b"keep")
+
+    def test_cors_setup_preserves_existing_rules(self):
+        original = {"ID": "existing", "AllowedOrigins": ["https://example.com"], "AllowedMethods": ["GET"]}
+        self.s3.put_bucket_cors(Bucket=settings.S3_BUCKET, CORSConfiguration={"CORSRules": [original]})
+        with patch("tracker.storage.is_backblaze", return_value=True), patch("tracker.storage.client", return_value=self.s3):
+            call_command("setup_storage_cors", origin=["http://127.0.0.1:8081"], apply=True, stdout=io.StringIO())
+        rules = self.s3.get_bucket_cors(Bucket=settings.S3_BUCKET)["CORSRules"]
+        self.assertEqual(len(rules), 2)
+        self.assertEqual(rules[0]["ID"], "existing")
+        self.assertIn("PUT", rules[1]["AllowedMethods"])
 
     def test_empty_order_missing_checksum_and_invalid_request_are_rejected(self):
         self.assertEqual(self.request_upload(order="   ").status_code, 400)

@@ -4,6 +4,7 @@ The browser uses Chromium's simulated camera. S3 requests are routed to Moto;
 this exercises the full app and compression, but not AWS's policy enforcement.
 """
 import email.policy
+from unittest.mock import patch
 from email.parser import BytesParser
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -47,21 +48,26 @@ class CameraBrowserTests(StaticLiveServerTestCase):
 
     def s3_route(self, route):
         request = route.request
-        if request.method == "POST":
+        if request.method in ("POST", "PUT"):
             self.posts += 1
             if self.fail_second_post and self.posts == 2:
                 route.abort("internetdisconnected")
                 return
-            mime = f"Content-Type: {request.headers['content-type']}\r\nMIME-Version: 1.0\r\n\r\n".encode() + request.post_data_buffer
-            message = BytesParser(policy=email.policy.default).parsebytes(mime)
-            fields = {}
-            for part in message.iter_parts():
-                name = part.get_param("name", header="content-disposition")
-                fields[name] = part.get_payload(decode=True)
-            data = fields["file"]
+            if request.method == "PUT":
+                data = request.post_data_buffer
+                key = unquote(urlparse(request.url).path.lstrip("/"))
+            else:
+                mime = f"Content-Type: {request.headers['content-type']}\r\nMIME-Version: 1.0\r\n\r\n".encode() + request.post_data_buffer
+                message = BytesParser(policy=email.policy.default).parsebytes(mime)
+                fields = {}
+                for part in message.iter_parts():
+                    name = part.get_param("name", header="content-disposition")
+                    fields[name] = part.get_payload(decode=True)
+                data = fields["file"]
+                key = fields["key"].decode()
             self.assertLessEqual(len(data), 500000)
             self.assertGreater(len(data), 0)
-            self.s3.put_object(Bucket=settings.S3_BUCKET, Key=fields["key"].decode(), Body=data,
+            self.s3.put_object(Bucket=settings.S3_BUCKET, Key=key, Body=data,
                                ContentType="image/jpeg", CacheControl="private, no-store, max-age=0")
             route.fulfill(status=204, headers={"Access-Control-Allow-Origin": self.live_server_url})
         else:
@@ -126,6 +132,7 @@ class CameraBrowserTests(StaticLiveServerTestCase):
         self.assertFalse(self.page.evaluate("document.documentElement.scrollWidth > innerWidth"))
         self.assertEqual(self.errors, [])
 
+
     def test_permission_denied_retaking_and_no_persistent_image_storage(self):
         self.login()
         self.page.goto(self.live_server_url + "/tambah/")
@@ -145,3 +152,16 @@ class CameraBrowserTests(StaticLiveServerTestCase):
         self.page.locator("#stop-camera").click()
         self.assertTrue(self.page.evaluate("document.querySelector('#camera').srcObject === null"))
         self.assertEqual(self.errors, [])
+
+
+class BackblazeCameraBrowserTests(CameraBrowserTests):
+    def setUp(self):
+        super().setUp()
+        self.s3.put_bucket_versioning(Bucket=settings.S3_BUCKET, VersioningConfiguration={"Status": "Enabled"})
+        client_patch = patch("tracker.storage.client", return_value=self.s3)
+        b2_patch = patch("tracker.storage.is_backblaze", return_value=True)
+        client_patch.start()
+        b2_patch.start()
+        self.addCleanup(client_patch.stop)
+        self.addCleanup(b2_patch.stop)
+

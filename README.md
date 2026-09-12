@@ -4,6 +4,42 @@ A small Django application for camera-only order documentation. Bahasa Indonesia
 
 Branding uses the supplied Boss Laundry horizontal logo and primary logo, resized for the header and favicon. Original artwork is unchanged; the UI matches its black, cyan (`#14c7e7`), and blue palette.
 
+## Backblaze B2 setup
+
+B2 is supported automatically when `S3_ENDPOINT_URL` points to a `*.backblazeb2.com` host. The app uses signed **PUT** uploads, derives the signing region from the endpoint, copies the exact verified object version, and permanently deletes every version of an expired/deleted key. AWS S3 continues using signed POST policies.
+
+For local use, put these settings in `.env` (keep your own credentials and bucket name):
+
+```dotenv
+DJANGO_DEBUG=1
+DJANGO_ALLOWED_HOSTS=127.0.0.1,localhost
+DATABASE_PATH=data/db.sqlite3
+S3_BUCKET=your-private-bucket
+S3_ENDPOINT_URL=https://s3.us-west-004.backblazeb2.com
+AWS_REGION=us-west-004
+AWS_ACCESS_KEY_ID=your-application-key-id
+AWS_SECRET_ACCESS_KEY=your-application-key
+```
+
+Use your bucket's actual endpoint, including `https://`. Use a private bucket with Object Lock disabled. The runtime key needs file read/write/list/delete capabilities; a separate setup key needs bucket read/list/write capabilities to configure CORS.
+
+```sh
+DJANGO_DEBUG=1 uv run --env-file .env manage.py setup_storage_cors --origin http://127.0.0.1:8081 --apply
+DJANGO_DEBUG=1 uv run --env-file .env manage.py runserver 127.0.0.1:8081
+```
+
+The setup command preserves existing rules and automatically uses the B2 Native API when the bucket already has native CORS rules. It changes only CORS, with a revision check for native updates. Add each exact browser origin you use (different ports are different origins). For production, add your HTTPS domain with the same command. If the command reports missing permissions, run it with a setup key permitted to manage bucket settings, then restore the restricted runtime key.
+
+To verify the live B2 integration, including physical deletion, run:
+
+```sh
+DJANGO_DEBUG=1 uv run --env-file .env manage.py check_storage --write-test
+```
+
+This uploads a tiny generated JPEG, verifies it, copies and downloads it, then removes its versions. It creates no tracker or user records and prints no credentials or signed URLs. Configure the existing five-minute cleanup timer on the VPS; locally, `DJANGO_DEBUG=1 uv run --env-file .env manage.py cleanup_photos` runs cleanup once. B2 is always versioned, so the AWS-specific never-versioned-bucket instructions below do not apply. Lifecycle rules are optional backup cleanup and do not replace the app's expiration checks and cleanup job.
+
+If you had the capture page open before updating to B2 support, reload it and retake unsaved photos so the browser loads the new upload code.
+
 ## Local development
 
 Requires Python 3.12 and [uv](https://docs.astral.sh/uv/). No Node build is required.

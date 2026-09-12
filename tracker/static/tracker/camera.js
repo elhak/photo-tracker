@@ -12,6 +12,7 @@
   const status = document.querySelector("#camera-status");
   const uploadStatus = document.querySelector("#upload-status");
   const savedLink = document.querySelector("#saved-link");
+  const newOrder = document.querySelector("#new-order");
   const csrf = form.querySelector("[name=csrfmiddlewaretoken]").value;
   const items = [];
   let stream = null, facing = "environment", busy = false, opening = false, frameBusy = false;
@@ -145,6 +146,9 @@
     });
     document.querySelector("#photo-count").textContent = items.length;
     save.disabled = busy || frameBusy || !items.some(item => !item.saved);
+    const allSaved = items.length > 0 && items.every(item => item.saved);
+    newOrder.hidden = busy || frameBusy || !allSaved;
+    save.hidden = !newOrder.hidden;
     capture.disabled = busy || frameBusy;
     if (!busy) {
       const count = items.filter(item => !item.saved).length;
