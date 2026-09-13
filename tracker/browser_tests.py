@@ -32,6 +32,8 @@ class CameraBrowserTests(StaticLiveServerTestCase):
         self.s3 = storage.client()
         self.s3.create_bucket(Bucket=settings.S3_BUCKET)
         User.objects.create_user("browser-admin", password="Browser-test-294!", is_staff=True, first_name="Admin")
+        for username in ("browser-alice", "browser-bob"):
+            User.objects.create_user(username, password="Browser-test-294!")
         self.pw = sync_playwright().start()
         self.addCleanup(self.pw.stop)
         self.browser = self.pw.chromium.launch(args=["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"])
@@ -75,12 +77,12 @@ class CameraBrowserTests(StaticLiveServerTestCase):
             data = self.s3.get_object(Bucket=settings.S3_BUCKET, Key=key)["Body"].read()
             route.fulfill(status=200, content_type="image/jpeg", body=data, headers={"Cache-Control": "no-store"})
 
-    def login(self):
+    def login(self, username="browser-admin"):
         self.page.goto(self.live_server_url + "/masuk/")
-        self.page.get_by_label("Nama pengguna").fill("browser-admin")
+        self.page.get_by_label("Nama pengguna").fill(username)
         self.page.get_by_label("Kata sandi", exact=True).fill("Browser-test-294!")
         self.page.get_by_role("button", name="Masuk").click()
-        expect(self.page.get_by_role("heading", name="Daftar tracker.")).to_be_visible()
+        expect(self.page.get_by_role("heading", name="Daftar Pesanan.")).to_be_visible()
 
     def database_summary(self):
         # Playwright's sync facade runs an event loop; query Django in a worker.
@@ -96,7 +98,7 @@ class CameraBrowserTests(StaticLiveServerTestCase):
     def test_capture_compression_partial_failure_retry_and_gallery(self):
         self.login()
         self.page.screenshot(path=str(self.output / "desktop-empty.png"), full_page=True)
-        self.page.get_by_role("link", name="Tambah tracker").first.click()
+        self.page.get_by_role("link", name="Tambah Pesanan").first.click()
         expect(self.page.locator("#save-photos")).to_be_disabled()
         self.page.locator("#order-id").fill("00124")
         self.page.get_by_role("button", name="Buka kamera").click()
@@ -125,13 +127,45 @@ class CameraBrowserTests(StaticLiveServerTestCase):
         self.page.set_viewport_size({"width": 390, "height": 844})
         self.page.screenshot(path=str(self.output / "mobile-gallery.png"), full_page=True)
         self.assertFalse(self.page.evaluate("document.documentElement.scrollWidth > innerWidth"))
-        self.page.get_by_role("link", name="Daftar tracker", exact=True).click()
+        self.page.get_by_role("link", name="Daftar Pesanan", exact=True).click()
         self.page.screenshot(path=str(self.output / "mobile-list.png"), full_page=True)
-        self.page.get_by_role("link", name="Tambah tracker", exact=False).first.click()
+        self.page.get_by_role("link", name="Tambah Pesanan", exact=False).first.click()
         self.page.screenshot(path=str(self.output / "mobile-capture.png"), full_page=True)
         self.assertFalse(self.page.evaluate("document.documentElement.scrollWidth > innerWidth"))
         self.assertEqual(self.errors, [])
 
+
+    def test_shared_order_uploader_labels_and_responsive_views(self):
+        for username in ("browser-alice", "browser-bob"):
+            self.login(username)
+            self.page.get_by_role("link", name="Tambah Pesanan").first.click()
+            self.page.locator("#order-id").fill("141")
+            self.page.locator("#open-camera").click()
+            expect(self.page.locator("#camera")).to_have_js_property("readyState", 4)
+            self.page.locator("#take-photo").click()
+            expect(self.page.locator("#photo-count")).to_have_text("1")
+            self.page.locator("#save-photos").click()
+            expect(self.page.locator(".queued-photo.saved")).to_have_count(1, timeout=20000)
+            self.page.locator("#saved-link").click()
+            expect(self.page.get_by_text(f"Diunggah oleh {username}", exact=True)).to_be_visible()
+            if username == "browser-alice":
+                self.page.get_by_role("button", name="Keluar").click()
+        self.assertEqual(self.database_summary()[:2], (2, 1))
+        expect(self.page.get_by_text("Diunggah oleh browser-alice", exact=True)).to_be_visible()
+        expect(self.page.get_by_role("link", name="Edit ID order")).to_have_count(0)
+        expect(self.page.get_by_role("link", name="Hapus", exact=True)).to_have_count(0)
+        detail_url = self.page.url
+        for name, width, height in [("desktop", 1440, 1000), ("mobile", 390, 844)]:
+            self.page.set_viewport_size({"width": width, "height": height})
+            self.page.goto(detail_url)
+            expect(self.page.locator(".photo-preview img").first).to_be_visible()
+            self.page.screenshot(path=str(self.output / f"shared-{name}-gallery.png"), full_page=True)
+            self.assertFalse(self.page.evaluate("document.documentElement.scrollWidth > innerWidth"))
+            self.page.get_by_role("link", name="Daftar Pesanan", exact=True).click()
+            expect(self.page.locator(".tracker-row")).to_have_count(1)
+            self.page.screenshot(path=str(self.output / f"shared-{name}-list.png"), full_page=True)
+            self.assertFalse(self.page.evaluate("document.documentElement.scrollWidth > innerWidth"))
+        self.assertEqual(self.errors, [])
 
     def test_permission_denied_retaking_and_no_persistent_image_storage(self):
         self.login()

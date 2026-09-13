@@ -76,8 +76,8 @@ Tests use Moto S3 in memory, not a real AWS account. Concurrent-submission tests
 
 - `is_staff` is the app's admin role. `createsuperuser` creates the initial admin. Admins can create both roles and reset passwords; registration and email delivery are absent.
 - Account setup asks for a username, role, and password (with confirmation); no email or full name is required. The initial `createsuperuser` command does not ask for email either. Passwords need at least six characters, with no uppercase, symbol, numeric-only, common-password, or username-similarity restrictions. The same rule applies to creation and password resets.
-- Users see and append only their own tracker data. Admins see and edit all data. Admin appends preserve the owner and record the actual uploader. Removing a user disables access and invalidates password-bound sessions permanently; the username remains reserved and photos retain normal expiration.
-- Order IDs are trimmed, case-sensitive, at most 100 characters, and preserve leading zeros. `(owner, order_id, order_month)` is unique. Months include the year and use Asia/Jakarta time: order 141 in August and September stays separate. A new upload fixes its month when the upload intent is created, so retries across midnight keep the same order. Adding photos through an existing tracker preserves its month; renames merge only within that owner and month. Existing trackers retain their photos and are assigned their creation month by the migration. SQLite uses WAL, a 20-second busy timeout, and short immediate transactions for concurrent writes. Storage network requests run outside transactions.
+- All active logged-in users see and append to shared team orders. Every photo displays the actual uploader’s username. Only admins can rename orders, delete photos, or manage users. Tracker owners are historical original-creator metadata, not access controls. Removing a user disables access and invalidates password-bound sessions permanently; the username remains reserved and photos retain normal expiration.
+- Order IDs are trimmed, case-sensitive, at most 100 characters, and preserve leading zeros. `(order_id, order_month)` is unique across all users. Months include the year and use Asia/Jakarta time: order 141 in August and September stays separate. A new upload fixes its month when the upload intent is created, so retries across midnight keep the same order. Adding photos through an existing tracker preserves its month; renames merge across creators within the same month, after confirmation. Existing trackers retain their photos and are assigned their creation month by the migration. SQLite uses WAL, a 20-second busy timeout, and short immediate transactions for concurrent writes. Storage network requests run outside transactions.
 - Deleting an individual photo hides it immediately; background cleanup removes its object. A previously issued read URL may remain usable for at most 60 seconds, even after access revocation. Expiration URLs never outlive photo expiration.
 - Camera frames become JPEG blobs, capped at 1920 pixels on the longest side, then progressively reduced to at most 500,000 bytes. Preview/remove lets the user retake a photo. Photos and previews are never intentionally persisted on the device; closing/reloading the page loses unsaved photos. The app cannot control browser/OS memory management or prevent screenshots.
 - Each photo has a stable client request UUID. An authenticated intent returns a five-minute signed S3 POST with a fixed key, content type, size range, SHA-256 checksum, and no-store metadata. A completion request validates the S3 bytes in RAM, then conditionally copies them to a separate published key. Reusing an upload policy cannot overwrite published photos. The VPS never writes image files to disk.
@@ -91,7 +91,7 @@ All application mutations require a Django session cookie and CSRF token. No pho
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/uploads/` | JSON: `order_id`, `request_id` (UUID), `checksum` (base64 SHA-256), optional `tracker_id`. Server derives owner and validates access. Returns intent `id` and S3 `upload: {url, fields}`, or a completed receipt. |
+| `POST /api/uploads/` | JSON: `order_id`, `request_id` (UUID), `checksum` (base64 SHA-256), optional `tracker_id`. Server derives original-creator metadata and validates the session. Returns intent `id` and S3 `upload: {url, fields}`, or a completed receipt. |
 | `POST /api/uploads/<uuid>/complete/` | Verifies and publishes an intent belonging to the current actor. Returns `completed: true` and `tracker_url`. Repeats do not duplicate photos. |
 | `GET /api/photos/<uuid>/url/` | Authorizes the current user and returns a private signed GET URL valid for at most 60 seconds, capped by photo expiry. |
 | `GET /health/` | Checks the app and database; returns `ok`. Does not expose credentials or probe S3. |
@@ -163,6 +163,12 @@ Before production use, test over the actual HTTPS domain on Android Chrome and i
 - Remove a preview and retake. Saving without a photo must be unavailable.
 - Interrupt the network during upload and completion; retry with no duplicate records or lost successful photos.
 - Close the capture page with unsaved images; check the warning and camera indicator switching off.
-- Confirm user isolation, admin edits, user deletion, independent photo expiry, and empty tracker cleanup.
+- Confirm shared viewing and uploads, per-photo uploader labels, admin-only edits, user deletion, independent photo expiry, and empty tracker cleanup.
 
 Browser automation can validate a simulated camera, but cannot certify physical camera behavior or OS gallery behavior. Real AWS policy enforcement and real-device testing need the deployment environment.
+
+## Shared-order migration
+
+Before deploying migration `0003_shared_orders`, stop the app and cleanup service/timer and take a verified database backup. Run migrations with the app stopped, then restart the app and cleanup timer. This migration combines existing trackers with the same case-sensitive order ID and Jakarta month, retaining the earliest-created tracker (lowest ID breaks ties), its original creator, and the latest activity timestamp. Photos retain their uploader, object key, expiration, and upload receipts; pending uploads join the shared order on completion. All existing photos become visible to active logged-in users.
+
+The merge migration is irreversible: rollback requires restoring the pre-migration database backup together with the previous application code. Old links to removed duplicate trackers are no longer valid; users can find the shared order from the list.

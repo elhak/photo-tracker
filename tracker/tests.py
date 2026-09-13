@@ -208,14 +208,16 @@ class TrackerTests(TestCase):
         response = self.client.get(reverse("tracker-list"))
         self.assertEqual([item.pk for item in response.context["page"]], [first.tracker_id, second.tracker_id])
 
-    def test_same_owner_merges_but_case_and_other_owners_remain_separate(self):
+    def test_users_merge_but_case_and_different_orders_remain_separate(self):
         first = self.published()
         second = self.published()
         other_case = self.published(order="001-ab")
         other_owner = self.published(actor=self.bob)
         self.assertEqual(first.tracker_id, second.tracker_id)
         self.assertNotEqual(first.tracker_id, other_case.tracker_id)
-        self.assertNotEqual(first.tracker_id, other_owner.tracker_id)
+        self.assertEqual(first.tracker_id, other_owner.tracker_id)
+        self.assertEqual(other_owner.added_by, self.bob)
+        self.assertNotEqual(first.tracker_id, self.published(order="142").tracker_id)
 
     def test_completion_is_idempotent_and_published_object_is_separate(self):
         intent = self.staged()
@@ -239,15 +241,31 @@ class TrackerTests(TestCase):
         self.assertEqual(self.client.post(reverse("upload-complete", args=[intent.pk])).status_code, 200)
         self.assertFalse(Photo.objects.exists())
 
-    def test_users_cannot_view_or_append_others_data(self):
+    def test_users_can_view_and_append_shared_data_but_not_complete_others_uploads(self):
         photo = self.published(actor=self.bob)
-        self.assertEqual(self.client.get(reverse("tracker-detail", args=[photo.tracker_id])).status_code, 404)
-        self.assertEqual(self.client.get(reverse("photo-url", args=[photo.pk])).status_code, 404)
-        self.assertEqual(self.request_upload(tracker_id=photo.tracker_id).status_code, 404)
-        response = self.client.get(reverse("tracker-list"))
-        self.assertNotContains(response, photo.tracker.order_id)
+        self.assertEqual(self.client.get(reverse("tracker-detail", args=[photo.tracker_id])).status_code, 200)
+        self.assertEqual(self.client.get(reverse("photo-url", args=[photo.pk])).status_code, 200)
+        self.assertEqual(self.client.get(reverse("capture"), {"tracker": photo.tracker_id}).status_code, 200)
+        response = self.request_upload(tracker_id=photo.tracker_id)
+        self.assertEqual(response.status_code, 200)
+        intent = UploadIntent.objects.get(pk=response.json()["id"])
+        self.s3.put_object(Bucket=settings.S3_BUCKET, Key=intent.staging_key, Body=jpeg())
+        added = services.complete_upload(intent.pk, self.alice).photo
+        self.assertEqual(added.tracker_id, photo.tracker_id)
+        self.assertEqual(added.added_by, self.alice)
+        self.assertEqual(self.request_upload(tracker_id=photo.tracker_id, request_id=intent.request_id).json()["completed"], True)
+        response = self.client.get(reverse("tracker-detail", args=[photo.tracker_id]))
+        self.assertContains(response, "Diunggah oleh alice")
+        self.assertContains(response, "Diunggah oleh bob")
+        self.assertContains(self.client.get(reverse("tracker-list")), photo.tracker.order_id)
         intent = self.staged(actor=self.bob)
         self.assertEqual(self.client.post(reverse("upload-complete", args=[intent.pk])).status_code, 404)
+        with self.assertRaises(services.ActionError):
+            services.complete_upload(intent.pk, self.alice)
+        self.client.logout()
+        self.assertEqual(self.client.get(reverse("tracker-detail", args=[photo.tracker_id])).status_code, 302)
+        self.assertEqual(self.client.get(reverse("photo-url", args=[photo.pk])).status_code, 401)
+        self.assertEqual(self.request_upload().status_code, 401)
 
     def test_admin_can_append_without_changing_owner_and_can_view_all(self):
         original = self.published(actor=self.bob)
@@ -286,11 +304,23 @@ class TrackerTests(TestCase):
         self.assertEqual(pending.order_id, "new")
         self.assertEqual(services.complete_upload(pending.pk, self.alice).photo.tracker_id, target.tracker_id)
 
-    def test_admin_rename_never_merges_different_owners(self):
+    def test_admin_rename_merges_different_creators_and_all_pending_uploads(self):
         photo = self.published(order="old")
-        self.published(order="new", actor=self.bob)
-        services.rename_tracker(photo.tracker_id, "new")
-        self.assertEqual(Tracker.objects.filter(order_id="new").count(), 2)
+        target = self.published(order="new", actor=self.bob)
+        pending = [self.staged("old", actor=user) for user in (self.alice, self.bob)]
+        self.client.force_login(self.admin)
+        url = reverse("tracker-edit", args=[photo.tracker_id])
+        self.assertContains(self.client.post(url, {"order_id": "new"}), "Saya setuju menggabungkan")
+        self.assertEqual(self.client.post(url, {"order_id": "new", "confirm": "yes"}).status_code, 302)
+        self.assertEqual(Tracker.objects.filter(order_id="new").count(), 1)
+        for intent in pending:
+            intent.refresh_from_db()
+            self.assertEqual(intent.order_id, "new")
+            result = services.complete_upload(intent.pk, intent.actor).photo
+            self.assertEqual(result.tracker_id, target.tracker_id)
+            self.assertEqual(result.added_by_id, intent.actor_id)
+        photo.refresh_from_db()
+        self.assertEqual(photo.added_by, self.alice)
 
     def test_deleted_user_access_and_sessions_are_revoked_but_photos_remain(self):
         photo = self.published()
@@ -301,6 +331,8 @@ class TrackerTests(TestCase):
         self.client.force_login(self.admin)
         self.assertEqual(self.client.get(reverse("tracker-detail", args=[photo.tracker_id])).status_code, 200)
         self.assertTrue(Photo.objects.filter(pk=photo.pk).exists())
+        self.client.force_login(self.bob)
+        self.assertContains(self.client.get(reverse("tracker-detail", args=[photo.tracker_id])), "Diunggah oleh alice")
 
     def test_last_active_admin_cannot_be_deleted(self):
         with self.assertRaises(services.ActionError):
@@ -468,7 +500,8 @@ class ConcurrentSubmissionTests(TransactionTestCase):
         self.user = User.objects.create_user("concurrent", password="test")
 
     def test_concurrent_photos_merge_into_one_tracker(self):
-        intents = [UploadIntent.objects.create(actor=self.user, owner=self.user, order_id="0001", checksum=digest(jpeg()), request_id=uuid.uuid4()) for _ in range(4)]
+        other = User.objects.create_user("contributor")
+        intents = [UploadIntent.objects.create(actor=user, owner=user, order_id="0001", checksum=digest(jpeg()), request_id=uuid.uuid4()) for user in (self.user, other, self.user, other)]
         barrier = threading.Barrier(4)
         def verified(intent):
             barrier.wait(timeout=10)
@@ -476,7 +509,7 @@ class ConcurrentSubmissionTests(TransactionTestCase):
         def complete(pk):
             close_old_connections()
             try:
-                return services.complete_upload(pk, User.objects.get(pk=self.user.pk)).photo.tracker_id
+                return services.complete_upload(pk, UploadIntent.objects.get(pk=pk).actor).photo.tracker_id
             finally:
                 close_old_connections()
         with patch("tracker.storage.verify_and_copy", side_effect=verified):
@@ -485,6 +518,7 @@ class ConcurrentSubmissionTests(TransactionTestCase):
         self.assertEqual(len(set(tracker_ids)), 1)
         self.assertEqual(Tracker.objects.count(), 1)
         self.assertEqual(Photo.objects.count(), 4)
+        self.assertEqual(set(Photo.objects.values_list("added_by_id", flat=True)), {self.user.pk, other.pk})
 
     def test_concurrent_completion_retry_does_not_duplicate_photo(self):
         intent = UploadIntent.objects.create(actor=self.user, owner=self.user, order_id="0001", checksum=digest(jpeg()), request_id=uuid.uuid4())
@@ -513,3 +547,58 @@ class ConcurrentSubmissionTests(TransactionTestCase):
             with sqlite3.connect(backup) as connection:
                 self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
                 self.assertEqual(connection.execute("SELECT username FROM tracker_user").fetchone()[0], "concurrent")
+
+
+class SharedOrderMigrationTests(TransactionTestCase):
+    def test_merge_preserves_photos_receipts_and_pending_uploads(self):
+        from django.db import connection
+        from django.db.migrations.executor import MigrationExecutor
+        previous = [("tracker", "0002_remove_tracker_unique_owner_order_and_more")]
+        current = [("tracker", "0003_shared_orders")]
+        executor = MigrationExecutor(connection)
+        # The test database is empty; undo only its schema to seed historical rows.
+        from django.db.migrations import RunPython
+        migration = executor.loader.get_migration("tracker", "0003_shared_orders")
+        operation = next(op for op in migration.operations if isinstance(op, RunPython))
+        with patch.object(operation, "reverse_code", RunPython.noop):
+            executor.migrate(previous)
+        self.addCleanup(lambda: MigrationExecutor(connection).migrate(current))
+        apps = executor.loader.project_state(previous).apps
+        OldUser = apps.get_model("tracker", "User")
+        OldTracker = apps.get_model("tracker", "Tracker")
+        OldPhoto = apps.get_model("tracker", "Photo")
+        OldIntent = apps.get_model("tracker", "UploadIntent")
+        alice = OldUser.objects.create(username="migration-alice")
+        bob = OldUser.objects.create(username="migration-bob")
+        now = timezone.now()
+        early = now - timedelta(days=2)
+        first = OldTracker.objects.create(owner=alice, order_id="141", order_month=date(2026, 9, 1), created_at=early, updated_at=early)
+        duplicate = OldTracker.objects.create(owner=bob, order_id="141", order_month=first.order_month, created_at=early, updated_at=now)
+        other_month = OldTracker.objects.create(owner=bob, order_id="141", order_month=date(2026, 8, 1))
+        other_order = OldTracker.objects.create(owner=bob, order_id="0141", order_month=first.order_month)
+        photos = []
+        for tracker, actor in [(first, alice), (duplicate, bob)]:
+            photo = OldPhoto.objects.create(tracker=tracker, added_by=actor, object_key=f"photos/{actor.pk}.jpg", byte_size=100, uploaded_at=early, expires_at=now + timedelta(days=28), deleted_at=now if actor == alice else None)
+            OldIntent.objects.create(actor=actor, owner=actor, order_id="141", order_month=first.order_month, request_id=uuid.uuid4(), checksum="x" * 44, photo=photo, completed_at=now)
+            photos.append(photo)
+        pending = OldIntent.objects.create(actor=bob, owner=bob, order_id="141", order_month=first.order_month, request_id=uuid.uuid4(), checksum="x" * 44)
+        executor = MigrationExecutor(connection)
+        executor.migrate(current)
+        survivor = Tracker.objects.get(pk=first.pk)
+        self.assertEqual(survivor.owner_id, alice.pk)
+        self.assertEqual(survivor.created_at, early)
+        self.assertEqual(survivor.updated_at, now)
+        self.assertFalse(Tracker.objects.filter(pk=duplicate.pk).exists())
+        self.assertEqual(Tracker.objects.count(), 3)
+        self.assertTrue(Tracker.objects.filter(pk=other_month.pk).exists())
+        self.assertTrue(Tracker.objects.filter(pk=other_order.pk).exists())
+        for old in photos:
+            photo = Photo.objects.get(pk=old.pk)
+            self.assertEqual(photo.tracker_id, first.pk)
+            for field in ("added_by_id", "object_key", "byte_size", "uploaded_at", "expires_at", "deleted_at"):
+                self.assertEqual(getattr(photo, field), getattr(old, field))
+            self.assertEqual(UploadIntent.objects.get(photo_id=old.pk).completed_at, now)
+        with patch("tracker.storage.verify_and_copy", return_value=(100, now)):
+            completed = services.complete_upload(pending.pk, User.objects.get(pk=bob.pk))
+        self.assertEqual(completed.photo.tracker_id, first.pk)
+        self.assertEqual(completed.photo.added_by_id, bob.pk)

@@ -37,8 +37,7 @@ def admin_required(view):
 
 
 def trackers_for(user):
-    qs = Tracker.objects.all()
-    return qs if user.is_staff else qs.filter(owner=user)
+    return Tracker.objects.all() if user.is_authenticated and user.is_active else Tracker.objects.none()
 
 
 def live_photos():
@@ -112,7 +111,7 @@ def tracker_detail(request, pk):
 def capture(request):
     tracker = None
     if request.GET.get("tracker"):
-        # Appending to someone else's order is an admin-only edit.
+        # All active users can contribute to a shared order.
         tracker = get_object_or_404(trackers_for(request.user), pk=request.GET["tracker"])
     return render(request, "tracker/capture.html", {"tracker": tracker})
 
@@ -204,7 +203,7 @@ def tracker_edit(request, pk):
     collision = None
     if request.method == "POST" and form.is_valid():
         order_id = form.cleaned_data["order_id"]
-        collision = Tracker.objects.filter(owner=tracker.owner, order_id=order_id, order_month=tracker.order_month).exclude(pk=tracker.pk).first()
+        collision = Tracker.objects.filter(order_id=order_id, order_month=tracker.order_month).exclude(pk=tracker.pk).first()
         if not collision or request.POST.get("confirm") == "yes":
             try:
                 target = services.rename_tracker(pk, order_id, confirmed=request.POST.get("confirm") == "yes")
@@ -269,7 +268,7 @@ def user_delete(request, pk):
         else:
             messages.success(request, "Akses pengguna dihapus. Foto tetap tersedia sampai kedaluwarsa.")
         return redirect("users")
-    return render(request, "tracker/confirm.html", {"title": f"Hapus pengguna {user.username}?", "description": "Pengguna tidak dapat masuk lagi. Foto tetap tersedia untuk admin sampai kedaluwarsa.", "cancel_url": "/pengguna/"})
+    return render(request, "tracker/confirm.html", {"title": f"Hapus pengguna {user.username}?", "description": "Pengguna tidak dapat masuk lagi. Foto tetap tersedia untuk tim sampai kedaluwarsa.", "cancel_url": "/pengguna/"})
 
 
 @require_GET

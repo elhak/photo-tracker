@@ -23,7 +23,7 @@ class Tracker(models.Model):
     updated_at = models.DateTimeField(default=timezone.now, db_index=True)
 
     class Meta:
-        constraints = [models.UniqueConstraint(fields=["owner", "order_id", "order_month"], name="unique_owner_order_month")]
+        constraints = [models.UniqueConstraint(fields=["order_id", "order_month"], name="unique_order_month")]
         ordering = ["-updated_at", "-pk"]
 
 
